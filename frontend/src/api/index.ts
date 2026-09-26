@@ -97,12 +97,23 @@ export const api = {
     }),
 
   // Transfers
-  getTransfers: () => request<InternalTransfer[]>('/transfers'),
+  getTransfers: (params?: { search?: string; status?: string }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.search) searchParams.append('search', params.search);
+    if (params?.status) searchParams.append('status', params.status);
+    const query = searchParams.toString();
+    return request<InternalTransfer[]>(`/transfers${query ? `?${query}` : ''}`);
+  },
   getTransfer: (id: number) => request<InternalTransfer>(`/transfers/${id}`),
   createTransfer: (data: any) =>
     request<InternalTransfer>('/transfers', {
       method: 'POST',
       body: JSON.stringify(data),
+    }),
+  updateTransferStatus: (id: number, status: string) =>
+    request<InternalTransfer>(`/transfers/${id}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
     }),
   validateTransfer: (id: number) =>
     request<InternalTransfer>(`/transfers/${id}/validate`, {

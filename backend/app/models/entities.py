@@ -141,6 +141,7 @@ class InternalTransfer(Base):
     status = Column(String(30), default="draft", nullable=False)
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
     source_location = relationship("Location", foreign_keys=[source_location_id])

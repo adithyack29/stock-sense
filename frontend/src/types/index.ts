@@ -126,13 +126,18 @@ export interface InternalTransfer {
   reference: string;
   source_location_id: number;
   source_location_name?: string;
+  source_warehouse_id?: number;
+  source_warehouse_name?: string;
   destination_location_id: number;
   destination_location_name?: string;
+  destination_warehouse_id?: number;
+  destination_warehouse_name?: string;
   date: string;
   status: StatusType;
   notes?: string;
   items?: TransferItem[];
   created_at?: string;
+  updated_at?: string;
 }
 
 export interface StockAdjustment {

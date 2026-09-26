@@ -336,56 +336,174 @@ class InventoryService:
             )
 
     @staticmethod
-    def complete_transfer(db: Session, transfer: InternalTransfer) -> InternalTransfer:
+    def update_transfer_status(db: Session, transfer: InternalTransfer, new_status: str) -> InternalTransfer:
+        new_status = new_status.lower().strip()
+        if transfer.status == new_status:
+            return transfer
+
+        # Check terminal statuses
         if transfer.status == "done":
-            raise HTTPException(status_code=400, detail="Transfer has already been processed.")
+            raise HTTPException(
+                status_code=400,
+                detail="Transfer has already been completed and cannot change status."
+            )
         if transfer.status == "canceled":
-            raise HTTPException(status_code=400, detail="Cannot process a canceled transfer.")
-
-        if transfer.source_location_id == transfer.destination_location_id:
-            raise HTTPException(status_code=400, detail="Source and destination locations cannot be identical.")
-
-        # Validate stock at source location
-        for item in transfer.items:
-            stock = db.query(Stock).filter(
-                Stock.product_id == item.product_id,
-                Stock.location_id == transfer.source_location_id
-            ).first()
-
-            available = stock.quantity if stock else 0.0
-            if available < item.quantity:
-                product = db.query(Product).get(item.product_id)
-                prod_name = product.name if product else f"Product #{item.product_id}"
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Insufficient stock at source for '{prod_name}'. Available: {available}, Required: {item.quantity}"
-                )
-
-        # Move stock from source to destination
-        for item in transfer.items:
-            src_stock = InventoryService.get_or_create_stock(db, item.product_id, transfer.source_location_id)
-            dst_stock = InventoryService.get_or_create_stock(db, item.product_id, transfer.destination_location_id)
-
-            src_stock.quantity -= item.quantity
-            dst_stock.quantity += item.quantity
-            src_stock.updated_at = datetime.utcnow()
-            dst_stock.updated_at = datetime.utcnow()
-
-            InventoryService.log_movement(
-                db=db,
-                reference=transfer.reference,
-                movement_type="transfer",
-                product_id=item.product_id,
-                quantity=item.quantity,
-                source_location_id=transfer.source_location_id,
-                destination_location_id=transfer.destination_location_id,
-                status="done"
+            raise HTTPException(
+                status_code=400,
+                detail="Canceled transfer is terminal and cannot change status."
             )
 
-        transfer.status = "done"
+        if new_status == "done":
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot directly set status to 'done'. Please use the validate endpoint to execute the transfer."
+            )
+
+        valid_transitions = {
+            "draft": ["ready", "canceled"],
+            "ready": ["canceled"],
+        }
+
+        allowed = valid_transitions.get(transfer.status, [])
+        if new_status not in allowed:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid status transition from '{transfer.status}' to '{new_status}'. Allowed transitions: {', '.join(allowed) or 'none'}."
+            )
+
+        transfer.status = new_status
+        transfer.updated_at = datetime.utcnow()
         db.commit()
         db.refresh(transfer)
         return transfer
+
+    @staticmethod
+    def complete_transfer(db: Session, transfer: InternalTransfer, operator_name: str = "Inventory Staff") -> InternalTransfer:
+        # 1. State machine & idempotency checks
+        if transfer.status == "done":
+            raise HTTPException(
+                status_code=400,
+                detail="Transfer has already been completed and stock has been moved."
+            )
+        if transfer.status == "canceled":
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot process a canceled transfer."
+            )
+        if transfer.status != "ready":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Transfer must be in 'ready' status before validation (currently '{transfer.status}'). Please mark as ready first."
+            )
+
+        if not transfer.items or len(transfer.items) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Transfer contains no line items to move."
+            )
+
+        # 2. Location checks
+        if transfer.source_location_id == transfer.destination_location_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Source and destination locations must be different."
+            )
+
+        source_loc = db.query(Location).filter(
+            Location.id == transfer.source_location_id,
+            Location.is_active == True
+        ).first()
+        if not source_loc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Source location ID {transfer.source_location_id} not found or inactive."
+            )
+
+        dest_loc = db.query(Location).filter(
+            Location.id == transfer.destination_location_id,
+            Location.is_active == True
+        ).first()
+        if not dest_loc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Destination location ID {transfer.destination_location_id} not found or inactive."
+            )
+
+        # 3. Atomic execution
+        try:
+            # Step A: Pre-validation of products, quantities, and source stock availability
+            product_demands = {}
+            for item in transfer.items:
+                if item.quantity <= 0:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Item quantity must be greater than zero. Received: {item.quantity}"
+                    )
+                prod = db.query(Product).filter(Product.id == item.product_id).first()
+                if not prod:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Product with ID {item.product_id} does not exist."
+                    )
+                product_demands[item.product_id] = product_demands.get(item.product_id, 0.0) + item.quantity
+
+            # Check stock availability at source location for all demanded products
+            for prod_id, total_needed in product_demands.items():
+                stock = db.query(Stock).filter(
+                    Stock.product_id == prod_id,
+                    Stock.location_id == transfer.source_location_id
+                ).first()
+                available = stock.quantity if stock else 0.0
+                if available < total_needed:
+                    prod = db.query(Product).get(prod_id)
+                    prod_name = prod.name if prod else f"Product #{prod_id}"
+                    uom = f" {prod.unit_of_measure}" if prod and prod.unit_of_measure else ""
+                    avail_str = f"{int(available) if available.is_integer() else available}{uom}"
+                    req_str = f"{int(total_needed) if total_needed.is_integer() else total_needed}{uom}"
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Insufficient stock for {prod_name} at {source_loc.name}. Available: {avail_str}, requested: {req_str}."
+                    )
+
+            # Step B: All checks passed! Deduct from source and credit to destination atomically
+            for item in transfer.items:
+                src_stock = db.query(Stock).filter(
+                    Stock.product_id == item.product_id,
+                    Stock.location_id == transfer.source_location_id
+                ).first()
+                src_stock.quantity -= item.quantity
+                src_stock.updated_at = datetime.utcnow()
+
+                dst_stock = InventoryService.get_or_create_stock(db, item.product_id, transfer.destination_location_id)
+                dst_stock.quantity += item.quantity
+                dst_stock.updated_at = datetime.utcnow()
+
+                InventoryService.log_movement(
+                    db=db,
+                    reference=transfer.reference,
+                    movement_type="transfer",
+                    product_id=item.product_id,
+                    quantity=item.quantity,
+                    source_location_id=transfer.source_location_id,
+                    destination_location_id=transfer.destination_location_id,
+                    user_name=operator_name,
+                    status="done"
+                )
+
+            transfer.status = "done"
+            transfer.updated_at = datetime.utcnow()
+            db.commit()
+            db.refresh(transfer)
+            return transfer
+        except HTTPException:
+            db.rollback()
+            raise
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(
+                status_code=500,
+                detail=f"Internal database error while executing transfer: {str(e)}"
+            )
 
     @staticmethod
     def execute_adjustment(db: Session, product_id: int, location_id: int, counted_qty: float, reason: str) -> StockAdjustment:

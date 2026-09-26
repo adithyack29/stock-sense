@@ -35,6 +35,7 @@ from app.schemas.domain import (
     DeliveryStatusUpdate,
     DeliveryResponse,
     TransferCreate,
+    TransferStatusUpdate,
     TransferResponse,
     AdjustmentCreate,
     AdjustmentResponse,
@@ -648,13 +649,31 @@ def validate_delivery(delivery_id: int, db: Session = Depends(get_db)):
     return get_delivery(d.id, db)
 
 # --- Transfers ---
+# --- Transfers ---
 @router.get("/transfers", response_model=List[TransferResponse])
-def get_transfers(db: Session = Depends(get_db)):
-    transfers = db.query(InternalTransfer).order_by(InternalTransfer.date.desc()).all()
+def get_transfers(
+    search: Optional[str] = Query(None, description="Search by reference or location"),
+    status: Optional[str] = Query(None, description="Filter by status (draft, ready, done, canceled)"),
+    db: Session = Depends(get_db)
+):
+    query = db.query(InternalTransfer)
+    if status and status.strip():
+        query = query.filter(InternalTransfer.status == status.lower().strip())
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        # Match reference or join location names
+        query = query.join(Location, InternalTransfer.source_location_id == Location.id).filter(
+            (InternalTransfer.reference.ilike(term)) | (Location.name.ilike(term))
+        )
+
+    transfers = query.order_by(InternalTransfer.date.desc()).all()
     res = []
     for t in transfers:
         src = db.query(Location).get(t.source_location_id)
         dst = db.query(Location).get(t.destination_location_id)
+        src_wh = db.query(Warehouse).get(src.warehouse_id) if src else None
+        dst_wh = db.query(Warehouse).get(dst.warehouse_id) if dst else None
+
         items = []
         for itm in t.items:
             prod = db.query(Product).get(itm.product_id)
@@ -671,13 +690,18 @@ def get_transfers(db: Session = Depends(get_db)):
             reference=t.reference,
             source_location_id=t.source_location_id,
             source_location_name=src.name if src else None,
+            source_warehouse_id=src_wh.id if src_wh else None,
+            source_warehouse_name=src_wh.name if src_wh else None,
             destination_location_id=t.destination_location_id,
             destination_location_name=dst.name if dst else None,
+            destination_warehouse_id=dst_wh.id if dst_wh else None,
+            destination_warehouse_name=dst_wh.name if dst_wh else None,
             date=t.date,
             status=t.status,
             notes=t.notes,
             items=items,
-            created_at=t.created_at
+            created_at=t.created_at,
+            updated_at=t.updated_at
         ))
     return res
 
@@ -688,6 +712,9 @@ def get_transfer(transfer_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Transfer not found")
     src = db.query(Location).get(t.source_location_id)
     dst = db.query(Location).get(t.destination_location_id)
+    src_wh = db.query(Warehouse).get(src.warehouse_id) if src else None
+    dst_wh = db.query(Warehouse).get(dst.warehouse_id) if dst else None
+
     items = []
     for itm in t.items:
         prod = db.query(Product).get(itm.product_id)
@@ -704,47 +731,117 @@ def get_transfer(transfer_id: int, db: Session = Depends(get_db)):
         reference=t.reference,
         source_location_id=t.source_location_id,
         source_location_name=src.name if src else None,
+        source_warehouse_id=src_wh.id if src_wh else None,
+        source_warehouse_name=src_wh.name if src_wh else None,
         destination_location_id=t.destination_location_id,
         destination_location_name=dst.name if dst else None,
+        destination_warehouse_id=dst_wh.id if dst_wh else None,
+        destination_warehouse_name=dst_wh.name if dst_wh else None,
         date=t.date,
         status=t.status,
         notes=t.notes,
         items=items,
-        created_at=t.created_at
+        created_at=t.created_at,
+        updated_at=t.updated_at
     )
 
 @router.post("/transfers", response_model=TransferResponse)
 def create_transfer(transfer_in: TransferCreate, db: Session = Depends(get_db)):
+    # 1. Validate locations
+    if not transfer_in.source_location_id or not transfer_in.destination_location_id:
+        raise HTTPException(status_code=400, detail="Both source and destination locations are required.")
+
+    if transfer_in.source_location_id == transfer_in.destination_location_id:
+        raise HTTPException(status_code=400, detail="Source and destination locations must be different.")
+
+    src_loc = db.query(Location).filter(
+        Location.id == transfer_in.source_location_id,
+        Location.is_active == True
+    ).first()
+    if not src_loc:
+        raise HTTPException(status_code=400, detail=f"Source location ID {transfer_in.source_location_id} not found or inactive.")
+
+    dst_loc = db.query(Location).filter(
+        Location.id == transfer_in.destination_location_id,
+        Location.is_active == True
+    ).first()
+    if not dst_loc:
+        raise HTTPException(status_code=400, detail=f"Destination location ID {transfer_in.destination_location_id} not found or inactive.")
+
+    # 2. Validate items
+    if not transfer_in.items or len(transfer_in.items) == 0:
+        raise HTTPException(status_code=400, detail="At least one transfer line item is required.")
+
+    # 3. Normalize and merge duplicate products
+    item_map = {}
+    for item in transfer_in.items:
+        if item.quantity <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Quantity for product #{item.product_id} must be strictly greater than zero."
+            )
+        prod = db.query(Product).filter(Product.id == item.product_id).first()
+        if not prod:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Product with ID {item.product_id} does not exist in catalog."
+            )
+        item_map[item.product_id] = item_map.get(item.product_id, 0.0) + item.quantity
+
+    # 4. Validate initial status
+    initial_status = (transfer_in.status or "draft").lower().strip()
+    if initial_status not in ["draft", "ready"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"New transfer status can only be 'draft' or 'ready'. Received: '{initial_status}'"
+        )
+
+    # 5. Generate sequential reference INT-YYYY-XXXX
     count = db.query(InternalTransfer).count() + 1
-    ref = f"TRF-{datetime.utcnow().strftime('%Y')}-{count:04d}"
+    ref = f"INT-{datetime.utcnow().strftime('%Y')}-{count:04d}"
 
     transfer = InternalTransfer(
         reference=ref,
         source_location_id=transfer_in.source_location_id,
         destination_location_id=transfer_in.destination_location_id,
         date=transfer_in.date or datetime.utcnow(),
-        status="draft",
-        notes=transfer_in.notes
+        status=initial_status,
+        notes=transfer_in.notes.strip() if transfer_in.notes else None
     )
     db.add(transfer)
     db.flush()
 
-    for item in transfer_in.items:
+    for pid, qty in item_map.items():
         db.add(TransferItem(
             transfer_id=transfer.id,
-            product_id=item.product_id,
-            quantity=item.quantity
+            product_id=pid,
+            quantity=qty
         ))
+
     db.commit()
     db.refresh(transfer)
     return get_transfer(transfer.id, db)
 
-@router.post("/transfers/{transfer_id}/validate")
+@router.patch("/transfers/{transfer_id}/status", response_model=TransferResponse)
+@router.post("/transfers/{transfer_id}/status", response_model=TransferResponse)
+def change_transfer_status(
+    transfer_id: int,
+    status_update: TransferStatusUpdate,
+    db: Session = Depends(get_db)
+):
+    t = db.query(InternalTransfer).filter(InternalTransfer.id == transfer_id).first()
+    if not t:
+        raise HTTPException(status_code=404, detail="Transfer not found")
+    InventoryService.update_transfer_status(db, t, status_update.status)
+    return get_transfer(t.id, db)
+
+@router.post("/transfers/{transfer_id}/validate", response_model=TransferResponse)
 def validate_transfer(transfer_id: int, db: Session = Depends(get_db)):
     t = db.query(InternalTransfer).filter(InternalTransfer.id == transfer_id).first()
     if not t:
         raise HTTPException(status_code=404, detail="Transfer not found")
-    return InventoryService.complete_transfer(db, t)
+    InventoryService.complete_transfer(db, t)
+    return get_transfer(t.id, db)
 
 # --- Adjustments ---
 @router.get("/adjustments", response_model=List[AdjustmentResponse])

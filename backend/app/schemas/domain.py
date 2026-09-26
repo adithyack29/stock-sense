@@ -161,20 +161,29 @@ class TransferCreate(BaseModel):
     destination_location_id: int
     notes: Optional[str] = None
     date: Optional[datetime] = None
-    items: List[DocumentItem] = []
+    status: Optional[str] = Field(default="draft")
+    items: List[DocumentItem] = Field(..., min_length=1)
+
+class TransferStatusUpdate(BaseModel):
+    status: str = Field(..., min_length=1)
 
 class TransferResponse(BaseModel):
     id: int
     reference: str
     source_location_id: int
     source_location_name: Optional[str] = None
+    source_warehouse_id: Optional[int] = None
+    source_warehouse_name: Optional[str] = None
     destination_location_id: int
     destination_location_name: Optional[str] = None
+    destination_warehouse_id: Optional[int] = None
+    destination_warehouse_name: Optional[str] = None
     date: datetime
     status: str
     notes: Optional[str] = None
     items: List[DocumentItemResponse] = []
     created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
