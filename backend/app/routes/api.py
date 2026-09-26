@@ -51,7 +51,7 @@ from app.schemas.domain import (
 from app.services.inventory_service import InventoryService
 from app.services.seed_service import seed_database
 
-router = APIRouter(prefix="/api")
+router = APIRouter()
 
 # --- System & Seed ---
 @router.get("/health")
