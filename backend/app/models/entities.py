@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Boolean, Text
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Boolean, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 from app.database import Base
 
@@ -58,6 +58,9 @@ class Location(Base):
 
 class Stock(Base):
     __tablename__ = "stocks"
+    __table_args__ = (
+        UniqueConstraint("product_id", "location_id", name="uix_product_location"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     product_id = Column(Integer, ForeignKey("products.id"), nullable=False, index=True)
@@ -76,10 +79,11 @@ class Receipt(Base):
     reference = Column(String(50), unique=True, index=True, nullable=False)
     supplier = Column(String(150), nullable=False)
     date = Column(DateTime, default=datetime.utcnow)
-    status = Column(String(30), default="draft", nullable=False) # draft, waiting, ready, done, canceled
+    status = Column(String(30), default="draft", nullable=False) # draft, ready, done, canceled
     destination_location_id = Column(Integer, ForeignKey("locations.id"), nullable=False)
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
     destination_location = relationship("Location")

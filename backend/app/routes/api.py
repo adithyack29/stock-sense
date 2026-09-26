@@ -30,6 +30,7 @@ from app.schemas.domain import (
     StockResponse,
     ReceiptCreate,
     ReceiptResponse,
+    ReceiptStatusUpdate,
     DeliveryCreate,
     DeliveryResponse,
     TransferCreate,
@@ -61,7 +62,7 @@ def get_dashboard(db: Session = Depends(get_db)):
     total_warehouses = db.query(Warehouse).count()
     total_locations = db.query(Location).count()
 
-    pending_receipts = db.query(Receipt).filter(Receipt.status.in_(["draft", "waiting", "ready"])).count()
+    pending_receipts = db.query(Receipt).filter(Receipt.status.in_(["draft", "ready"])).count()
     pending_deliveries = db.query(Delivery).filter(Delivery.status.in_(["draft", "waiting", "ready"])).count()
     pending_transfers = db.query(InternalTransfer).filter(InternalTransfer.status.in_(["draft", "waiting", "ready"])).count()
 
@@ -299,11 +300,23 @@ def get_stock(db: Session = Depends(get_db)):
 
 # --- Receipts ---
 @router.get("/receipts", response_model=List[ReceiptResponse])
-def get_receipts(db: Session = Depends(get_db)):
-    receipts = db.query(Receipt).order_by(Receipt.date.desc()).all()
+def get_receipts(
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    query = db.query(Receipt)
+    if status:
+        query = query.filter(Receipt.status == status.lower().strip())
+    if search:
+        s = f"%{search.strip()}%"
+        query = query.filter((Receipt.reference.ilike(s)) | (Receipt.supplier.ilike(s)))
+
+    receipts = query.order_by(Receipt.date.desc()).all()
     res = []
     for r in receipts:
         loc = db.query(Location).get(r.destination_location_id)
+        wh = db.query(Warehouse).get(loc.warehouse_id) if loc else None
         items = []
         for itm in r.items:
             prod = db.query(Product).get(itm.product_id)
@@ -324,8 +337,11 @@ def get_receipts(db: Session = Depends(get_db)):
             notes=r.notes,
             destination_location_id=r.destination_location_id,
             destination_location_name=loc.name if loc else None,
+            warehouse_id=wh.id if wh else None,
+            warehouse_name=wh.name if wh else None,
             items=items,
-            created_at=r.created_at
+            created_at=r.created_at,
+            updated_at=r.updated_at
         ))
     return res
 
@@ -335,6 +351,7 @@ def get_receipt(receipt_id: int, db: Session = Depends(get_db)):
     if not r:
         raise HTTPException(status_code=404, detail="Receipt not found")
     loc = db.query(Location).get(r.destination_location_id)
+    wh = db.query(Warehouse).get(loc.warehouse_id) if loc else None
     items = []
     for itm in r.items:
         prod = db.query(Product).get(itm.product_id)
@@ -355,42 +372,105 @@ def get_receipt(receipt_id: int, db: Session = Depends(get_db)):
         notes=r.notes,
         destination_location_id=r.destination_location_id,
         destination_location_name=loc.name if loc else None,
+        warehouse_id=wh.id if wh else None,
+        warehouse_name=wh.name if wh else None,
         items=items,
-        created_at=r.created_at
+        created_at=r.created_at,
+        updated_at=r.updated_at
     )
 
 @router.post("/receipts", response_model=ReceiptResponse)
 def create_receipt(receipt_in: ReceiptCreate, db: Session = Depends(get_db)):
+    # 1. Validate supplier
+    supplier_clean = receipt_in.supplier.strip()
+    if not supplier_clean:
+        raise HTTPException(status_code=400, detail="Supplier name is required and cannot be blank.")
+
+    # 2. Validate destination location exists and is active
+    loc = db.query(Location).filter(
+        Location.id == receipt_in.destination_location_id,
+        Location.is_active == True
+    ).first()
+    if not loc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Destination location ID {receipt_in.destination_location_id} not found or inactive."
+        )
+
+    # 3. Validate items
+    if not receipt_in.items or len(receipt_in.items) == 0:
+        raise HTTPException(status_code=400, detail="At least one receipt line item is required.")
+
+    # 4. Normalize and merge duplicate products
+    item_map = {}
+    for item in receipt_in.items:
+        if item.quantity <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Quantity for product #{item.product_id} must be strictly greater than zero."
+            )
+        prod = db.query(Product).filter(Product.id == item.product_id).first()
+        if not prod:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Product with ID {item.product_id} does not exist in catalog."
+            )
+        item_map[item.product_id] = item_map.get(item.product_id, 0.0) + item.quantity
+
+    # 5. Validate initial status
+    initial_status = (receipt_in.status or "draft").lower().strip()
+    if initial_status not in ["draft", "ready"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"New receipt status can only be 'draft' or 'ready'. Received: '{initial_status}'"
+        )
+
+    # 6. Generate sequential reference
     count = db.query(Receipt).count() + 1
     ref = f"REC-{datetime.utcnow().strftime('%Y')}-{count:04d}"
 
     receipt = Receipt(
         reference=ref,
-        supplier=receipt_in.supplier,
+        supplier=supplier_clean,
         date=receipt_in.date or datetime.utcnow(),
-        status="draft",
+        status=initial_status,
         destination_location_id=receipt_in.destination_location_id,
-        notes=receipt_in.notes
+        notes=receipt_in.notes.strip() if receipt_in.notes else None
     )
     db.add(receipt)
     db.flush()
 
-    for item in receipt_in.items:
+    for pid, qty in item_map.items():
         db.add(ReceiptItem(
             receipt_id=receipt.id,
-            product_id=item.product_id,
-            quantity=item.quantity
+            product_id=pid,
+            quantity=qty
         ))
+
     db.commit()
     db.refresh(receipt)
     return get_receipt(receipt.id, db)
 
-@router.post("/receipts/{receipt_id}/validate")
+@router.patch("/receipts/{receipt_id}/status", response_model=ReceiptResponse)
+@router.post("/receipts/{receipt_id}/status", response_model=ReceiptResponse)
+def change_receipt_status(
+    receipt_id: int,
+    status_update: ReceiptStatusUpdate,
+    db: Session = Depends(get_db)
+):
+    r = db.query(Receipt).filter(Receipt.id == receipt_id).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+    InventoryService.update_receipt_status(db, r, status_update.status)
+    return get_receipt(r.id, db)
+
+@router.post("/receipts/{receipt_id}/validate", response_model=ReceiptResponse)
 def validate_receipt(receipt_id: int, db: Session = Depends(get_db)):
     r = db.query(Receipt).filter(Receipt.id == receipt_id).first()
     if not r:
         raise HTTPException(status_code=404, detail="Receipt not found")
-    return InventoryService.complete_receipt(db, r)
+    InventoryService.complete_receipt(db, r)
+    return get_receipt(r.id, db)
 
 # --- Deliveries ---
 @router.get("/deliveries", response_model=List[DeliveryResponse])

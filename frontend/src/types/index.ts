@@ -76,8 +76,11 @@ export interface Receipt {
   notes?: string;
   destination_location_id: number;
   destination_location_name?: string;
+  warehouse_id?: number;
+  warehouse_name?: string;
   items?: ReceiptItem[];
   created_at?: string;
+  updated_at?: string;
 }
 
 export interface DeliveryItem {

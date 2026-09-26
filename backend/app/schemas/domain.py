@@ -97,11 +97,15 @@ class DocumentItemResponse(BaseModel):
 
 # Receipts
 class ReceiptCreate(BaseModel):
-    supplier: str = Field(..., min_length=1)
+    supplier: str = Field(..., min_length=1, max_length=150)
     destination_location_id: int
     notes: Optional[str] = None
     date: Optional[datetime] = None
-    items: List[DocumentItem] = []
+    status: Optional[str] = Field(default="draft")
+    items: List[DocumentItem] = Field(..., min_length=1)
+
+class ReceiptStatusUpdate(BaseModel):
+    status: str = Field(..., min_length=1)
 
 class ReceiptResponse(BaseModel):
     id: int
@@ -112,8 +116,11 @@ class ReceiptResponse(BaseModel):
     notes: Optional[str] = None
     destination_location_id: int
     destination_location_name: Optional[str] = None
+    warehouse_id: Optional[int] = None
+    warehouse_name: Optional[str] = None
     items: List[DocumentItemResponse] = []
     created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True

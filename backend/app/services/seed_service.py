@@ -157,12 +157,12 @@ def seed_database(db: Session):
     db.add(ReceiptItem(receipt_id=rcpt1.id, product_id=p1.id, quantity=350.0))
     db.add(ReceiptItem(receipt_id=rcpt1.id, product_id=p6.id, quantity=15.0))
 
-    # Sample Receipt (Waiting)
+    # Sample Receipt (Ready)
     rcpt2 = Receipt(
         reference="REC-2026-0002",
         supplier="National Cement Corp.",
         date=datetime.utcnow() - timedelta(hours=6),
-        status="waiting",
+        status="ready",
         destination_location_id=loc_rack_a.id,
         notes="Awaiting carrier offloading verification.",
     )

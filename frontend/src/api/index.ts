@@ -49,12 +49,23 @@ export const api = {
   getStock: () => request<StockItem[]>('/stock'),
 
   // Receipts
-  getReceipts: () => request<Receipt[]>('/receipts'),
+  getReceipts: (params?: { status?: string; search?: string }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.status) searchParams.append('status', params.status);
+    if (params?.search) searchParams.append('search', params.search);
+    const query = searchParams.toString();
+    return request<Receipt[]>(`/receipts${query ? `?${query}` : ''}`);
+  },
   getReceipt: (id: number) => request<Receipt>(`/receipts/${id}`),
   createReceipt: (data: any) =>
     request<Receipt>('/receipts', {
       method: 'POST',
       body: JSON.stringify(data),
+    }),
+  updateReceiptStatus: (id: number, status: string) =>
+    request<Receipt>(`/receipts/${id}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
     }),
   validateReceipt: (id: number) =>
     request<Receipt>(`/receipts/${id}/validate`, {

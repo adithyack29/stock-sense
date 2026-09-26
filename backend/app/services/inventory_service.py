@@ -58,33 +58,131 @@ class InventoryService:
         return movement
 
     @staticmethod
-    def complete_receipt(db: Session, receipt: Receipt) -> Receipt:
+    def update_receipt_status(db: Session, receipt: Receipt, new_status: str) -> Receipt:
+        new_status = new_status.lower().strip()
+        if receipt.status == new_status:
+            return receipt
+
+        # Check terminal statuses
         if receipt.status == "done":
-            raise HTTPException(status_code=400, detail="Receipt has already been processed.")
+            raise HTTPException(
+                status_code=400,
+                detail="Receipt has already been completed and cannot change status."
+            )
         if receipt.status == "canceled":
-            raise HTTPException(status_code=400, detail="Cannot process a canceled receipt.")
-
-        # Increase stock at destination location for each item & log movement
-        for item in receipt.items:
-            stock = InventoryService.get_or_create_stock(db, item.product_id, receipt.destination_location_id)
-            stock.quantity += item.quantity
-            stock.updated_at = datetime.utcnow()
-
-            InventoryService.log_movement(
-                db=db,
-                reference=receipt.reference,
-                movement_type="receipt",
-                product_id=item.product_id,
-                quantity=item.quantity,
-                source_location_id=None,
-                destination_location_id=receipt.destination_location_id,
-                status="done"
+            raise HTTPException(
+                status_code=400,
+                detail="Canceled receipt is terminal and cannot change status."
             )
 
-        receipt.status = "done"
+        if new_status == "done":
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot directly set status to 'done'. Please use the validate endpoint to verify and receive goods."
+            )
+
+        valid_transitions = {
+            "draft": ["ready", "canceled"],
+            "ready": ["canceled"],
+        }
+
+        allowed = valid_transitions.get(receipt.status, [])
+        if new_status not in allowed:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid status transition from '{receipt.status}' to '{new_status}'. Allowed transitions: {', '.join(allowed) or 'none'}."
+            )
+
+        receipt.status = new_status
+        receipt.updated_at = datetime.utcnow()
         db.commit()
         db.refresh(receipt)
         return receipt
+
+    @staticmethod
+    def complete_receipt(db: Session, receipt: Receipt, operator_name: str = "Inventory Staff") -> Receipt:
+        # 1. State machine & idempotency checks
+        if receipt.status == "done":
+            raise HTTPException(
+                status_code=400,
+                detail="Receipt has already been processed and goods received."
+            )
+        if receipt.status == "canceled":
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot process a canceled receipt."
+            )
+        if receipt.status != "ready":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Receipt must be in 'ready' status before validation (currently '{receipt.status}'). Please mark as ready first."
+            )
+
+        if not receipt.items or len(receipt.items) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Receipt contains no line items to receive."
+            )
+
+        # 2. Location verification
+        dest_loc = db.query(Location).filter(
+            Location.id == receipt.destination_location_id,
+            Location.is_active == True
+        ).first()
+        if not dest_loc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Destination location ID {receipt.destination_location_id} not found or inactive."
+            )
+
+        # 3. Atomic execution
+        try:
+            # Validate all products exist & have positive quantity before mutating anything
+            for item in receipt.items:
+                if item.quantity <= 0:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Item quantity must be greater than zero. Received: {item.quantity}"
+                    )
+                prod = db.query(Product).filter(Product.id == item.product_id).first()
+                if not prod:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Product with ID {item.product_id} does not exist."
+                    )
+
+            # Increase stock at destination location for each item & log movement
+            for item in receipt.items:
+                stock = InventoryService.get_or_create_stock(db, item.product_id, receipt.destination_location_id)
+                stock.quantity += item.quantity
+                stock.updated_at = datetime.utcnow()
+
+                InventoryService.log_movement(
+                    db=db,
+                    reference=receipt.reference,
+                    movement_type="receipt",
+                    product_id=item.product_id,
+                    quantity=item.quantity,
+                    source_location_id=None,
+                    destination_location_id=receipt.destination_location_id,
+                    user_name=operator_name,
+                    status="done"
+                )
+
+            receipt.status = "done"
+            receipt.updated_at = datetime.utcnow()
+            db.commit()
+            db.refresh(receipt)
+            return receipt
+        except HTTPException:
+            db.rollback()
+            raise
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(
+                status_code=500,
+                detail=f"Internal database error while receiving goods: {str(e)}"
+            )
 
     @staticmethod
     def complete_delivery(db: Session, delivery: Delivery) -> Delivery:
