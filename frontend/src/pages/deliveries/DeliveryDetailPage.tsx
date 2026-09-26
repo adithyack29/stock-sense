@@ -60,6 +60,34 @@ export const DeliveryDetailPage: React.FC = () => {
     fetchDelivery();
   }, [id]);
 
+  const handlePickItems = async () => {
+    if (!delivery) return;
+    try {
+      setIsProcessing(true);
+      setActionError(null);
+      const updated = await api.updateDeliveryStatus(delivery.id, 'waiting');
+      setDelivery(updated);
+    } catch (err: any) {
+      setActionError(err.message || 'Failed to update delivery to Picked.');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handlePackItems = async () => {
+    if (!delivery) return;
+    try {
+      setIsProcessing(true);
+      setActionError(null);
+      const updated = await api.updateDeliveryStatus(delivery.id, 'ready');
+      setDelivery(updated);
+    } catch (err: any) {
+      setActionError(err.message || 'Failed to update delivery to Packed.');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
   const handleMarkReady = async () => {
     if (!delivery) return;
     try {
@@ -250,7 +278,16 @@ export const DeliveryDetailPage: React.FC = () => {
                   disabled={isProcessing}
                   leftIcon={<Ban className="w-3.5 h-3.5 text-rose-500" />}
                 >
-                  Cancel Order
+                  Cancel
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handlePickItems}
+                  isLoading={isProcessing}
+                  leftIcon={<Boxes className="w-4 h-4 text-blue-600" />}
+                >
+                  1. Pick Items
                 </Button>
                 <Button
                   variant="primary"
@@ -264,7 +301,7 @@ export const DeliveryDetailPage: React.FC = () => {
               </>
             )}
 
-            {(isReady || isWaiting) && (
+            {isWaiting && (
               <>
                 <Button
                   variant="outline"
@@ -273,7 +310,30 @@ export const DeliveryDetailPage: React.FC = () => {
                   disabled={isProcessing}
                   leftIcon={<Ban className="w-3.5 h-3.5 text-rose-500" />}
                 >
-                  Cancel Order
+                  Cancel
+                </Button>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={handlePackItems}
+                  isLoading={isProcessing}
+                  leftIcon={<CheckCircle2 className="w-4 h-4" />}
+                >
+                  2. Pack Items (Ready)
+                </Button>
+              </>
+            )}
+
+            {isReady && (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setIsConfirmCancelOpen(true)}
+                  disabled={isProcessing}
+                  leftIcon={<Ban className="w-3.5 h-3.5 text-rose-500" />}
+                >
+                  Cancel
                 </Button>
                 <Button
                   variant="primary"
@@ -282,13 +342,69 @@ export const DeliveryDetailPage: React.FC = () => {
                   isLoading={isProcessing}
                   leftIcon={<Truck className="w-4 h-4" />}
                 >
-                  Validate / Ship Order
+                  3. Validate & Ship
                 </Button>
               </>
             )}
           </div>
         }
       />
+
+      {/* 3-Step Outbound Process Stepper (PDF Specification) */}
+      <div className="bg-white p-4 rounded-xl border border-slate-200/90 shadow-2xs">
+        <div className="flex items-center justify-between mb-2.5">
+          <span className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+            Warehouse Outbound Fulfillment Process
+          </span>
+          <span className="text-[11px] text-slate-400">
+            Step 1: Pick → Step 2: Pack → Step 3: Validate
+          </span>
+        </div>
+        <div className="grid grid-cols-3 gap-3 text-center text-xs">
+          <div
+            className={`p-2.5 rounded-lg border transition-all ${
+              isWaiting || isReady || isDone
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-800 font-semibold'
+                : 'bg-indigo-50 border-indigo-200 text-indigo-700 font-semibold'
+            }`}
+          >
+            <span className="block font-bold">1. Pick Items</span>
+            <span className="text-[10px] block opacity-80 mt-0.5">
+              {isWaiting || isReady || isDone ? '✓ Items Picked' : 'Pending Warehouse Pick'}
+            </span>
+          </div>
+
+          <div
+            className={`p-2.5 rounded-lg border transition-all ${
+              isReady || isDone
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-800 font-semibold'
+                : isWaiting
+                ? 'bg-blue-50 border-blue-200 text-blue-700 font-semibold ring-2 ring-blue-500/20'
+                : 'bg-slate-50 border-slate-200 text-slate-400'
+            }`}
+          >
+            <span className="block font-bold">2. Pack Items</span>
+            <span className="text-[10px] block opacity-80 mt-0.5">
+              {isReady || isDone ? '✓ Orders Packed' : isWaiting ? 'Ready to Pack' : 'Awaiting Picking'}
+            </span>
+          </div>
+
+          <div
+            className={`p-2.5 rounded-lg border transition-all ${
+              isDone
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-800 font-semibold'
+                : isReady
+                ? 'bg-purple-50 border-purple-200 text-purple-700 font-semibold ring-2 ring-purple-500/20'
+                : 'bg-slate-50 border-slate-200 text-slate-400'
+            }`}
+          >
+            <span className="block font-bold">3. Validate & Ship</span>
+            <span className="text-[10px] block opacity-80 mt-0.5">
+              {isDone ? '✓ Stock Deducted' : isReady ? 'Awaiting Dispatch' : 'Pending'}
+            </span>
+          </div>
+        </div>
+      </div>
 
       {/* Action Error Alerts */}
       {actionError && (

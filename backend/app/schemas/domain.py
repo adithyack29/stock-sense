@@ -6,6 +6,19 @@ from pydantic import BaseModel, Field
 class StatusUpdate(BaseModel):
     status: str
 
+# Auth & OTP Schemas
+class OTPRequest(BaseModel):
+    email: str
+
+class OTPResponse(BaseModel):
+    message: str
+    otp: str
+
+class OTPResetPassword(BaseModel):
+    email: str
+    otp: str
+    new_password: str = Field(..., min_length=4)
+
 # Product Schemas
 class ProductBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=150)
@@ -17,6 +30,13 @@ class ProductBase(BaseModel):
 
 class ProductCreate(ProductBase):
     pass
+
+class ProductUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=150)
+    sku: Optional[str] = Field(None, min_length=1, max_length=50)
+    category: Optional[str] = None
+    unit_of_measure: Optional[str] = None
+    reorder_level: Optional[float] = Field(None, ge=0.0)
 
 class ProductResponse(ProductBase):
     id: int

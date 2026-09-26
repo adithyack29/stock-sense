@@ -14,9 +14,11 @@ import {
   CheckCircle2,
   ArrowRight,
   ExternalLink,
+  Filter,
+  FilterX,
 } from 'lucide-react';
 import { api } from '../api';
-import { DashboardMetrics } from '../types';
+import { DashboardMetrics, Location, Product } from '../types';
 import { PageHeader } from '../components/common/PageHeader';
 import { StatCard } from '../components/common/StatCard';
 import { Card, CardHeader, CardBody } from '../components/common/Card';
@@ -30,15 +32,29 @@ import { formatDate, formatQuantity } from '../utils/formatters';
 export const DashboardPage: React.FC = () => {
   const navigate = useNavigate();
   const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
+  const [locations, setLocations] = useState<Location[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Dynamic Filters (PDF Page 1 Specification)
+  const [docTypeFilter, setDocTypeFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
+  const [locationFilter, setLocationFilter] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('');
 
   const fetchDashboard = async () => {
     try {
       setIsLoading(true);
       setError(null);
-      const data = await api.getDashboardMetrics();
+      const [data, locs, prods] = await Promise.all([
+        api.getDashboardMetrics(),
+        api.getLocations(),
+        api.getProducts(),
+      ]);
       setMetrics(data);
+      setLocations(locs);
+      setProducts(prods);
     } catch (err: any) {
       console.error(err);
       setError(err.message || 'Failed to load dashboard metrics.');
@@ -50,6 +66,30 @@ export const DashboardPage: React.FC = () => {
   useEffect(() => {
     fetchDashboard();
   }, []);
+
+  const categories = Array.from(new Set(products.map((p) => p.category).filter(Boolean)));
+  const hasDynamicFilters = Boolean(docTypeFilter || statusFilter || locationFilter || categoryFilter);
+
+  const handleClearDynamicFilters = () => {
+    setDocTypeFilter('');
+    setStatusFilter('');
+    setLocationFilter('');
+    setCategoryFilter('');
+  };
+
+  const filteredMovements = (metrics?.recent_movements || []).filter((m) => {
+    if (docTypeFilter && m.movement_type !== docTypeFilter) return false;
+    if (statusFilter && m.status !== statusFilter) return false;
+    if (locationFilter) {
+      const locId = parseInt(locationFilter, 10);
+      if (m.source_location_id !== locId && m.destination_location_id !== locId) return false;
+    }
+    if (categoryFilter) {
+      const prod = products.find((p) => p.id === m.product_id);
+      if (!prod || prod.category !== categoryFilter) return false;
+    }
+    return true;
+  });
 
   if (isLoading) {
     return <LoadingState message="Connecting to StockSense engine..." />;
@@ -370,10 +410,87 @@ export const DashboardPage: React.FC = () => {
               }
             />
             <CardBody className="p-0">
+              {/* Dynamic Filters Toolbar (PDF Page 1 Specification) */}
+              <div className="p-3 bg-slate-50 border-b border-slate-200/80 flex flex-wrap items-center justify-between gap-2.5 text-xs">
+                <div className="flex items-center gap-1.5 text-slate-700 font-semibold text-[11px] uppercase tracking-wider">
+                  <Filter className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>Dynamic Filters:</span>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* 1. Document Type Filter */}
+                  <select
+                    value={docTypeFilter}
+                    onChange={(e) => setDocTypeFilter(e.target.value)}
+                    className="bg-white border border-slate-200 rounded-md px-2 py-1 text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-500 shadow-2xs text-xs"
+                  >
+                    <option value="">All Document Types</option>
+                    <option value="receipt">Receipts (Incoming)</option>
+                    <option value="delivery">Deliveries (Outgoing)</option>
+                    <option value="transfer">Internal Transfers</option>
+                    <option value="adjustment">Stock Adjustments</option>
+                  </select>
+
+                  {/* 2. Status Filter */}
+                  <select
+                    value={statusFilter}
+                    onChange={(e) => setStatusFilter(e.target.value)}
+                    className="bg-white border border-slate-200 rounded-md px-2 py-1 text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-500 shadow-2xs text-xs"
+                  >
+                    <option value="">All Statuses</option>
+                    <option value="done">Done / Audited</option>
+                    <option value="ready">Ready</option>
+                    <option value="waiting">Waiting / Staged</option>
+                    <option value="draft">Draft</option>
+                    <option value="canceled">Canceled</option>
+                  </select>
+
+                  {/* 3. Warehouse or Location Filter */}
+                  <select
+                    value={locationFilter}
+                    onChange={(e) => setLocationFilter(e.target.value)}
+                    className="bg-white border border-slate-200 rounded-md px-2 py-1 text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-500 shadow-2xs text-xs"
+                  >
+                    <option value="">All Warehouses & Locations</option>
+                    {locations.map((loc) => (
+                      <option key={loc.id} value={loc.id}>
+                        {loc.name} ({loc.warehouse_name || 'Warehouse'})
+                      </option>
+                    ))}
+                  </select>
+
+                  {/* 4. Product Category Filter */}
+                  <select
+                    value={categoryFilter}
+                    onChange={(e) => setCategoryFilter(e.target.value)}
+                    className="bg-white border border-slate-200 rounded-md px-2 py-1 text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-500 shadow-2xs text-xs"
+                  >
+                    <option value="">All Product Categories</option>
+                    {categories.map((cat) => (
+                      <option key={cat} value={cat}>
+                        {cat}
+                      </option>
+                    ))}
+                  </select>
+
+                  {hasDynamicFilters && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={handleClearDynamicFilters}
+                      leftIcon={<FilterX className="w-3.5 h-3.5" />}
+                      className="text-xs text-slate-500 hover:text-slate-800 h-7 px-2"
+                    >
+                      Reset
+                    </Button>
+                  )}
+                </div>
+              </div>
+
               <Table
                 keyExtractor={(row) => row.id}
-                emptyText="No recent stock movements recorded."
-                data={metrics.recent_movements}
+                emptyText="No recent stock movements match the selected filters."
+                data={filteredMovements}
                 columns={[
                   {
                     key: 'date',

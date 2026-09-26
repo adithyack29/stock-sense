@@ -29,6 +29,23 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  updateProduct: (id: number, data: Partial<Product>) =>
+    request<Product>(`/products/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+
+  // Authentication & OTP Password Reset
+  requestOtp: (email: string) =>
+    request<{ message: string; otp: string }>('/auth/request-otp', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    }),
+  resetPassword: (payload: { email: string; otp: string; new_password: string }) =>
+    request<{ status: string; message: string; email: string }>('/auth/reset-password', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
 
   // Warehouses
   getWarehouses: () => request<Warehouse[]>('/warehouses'),

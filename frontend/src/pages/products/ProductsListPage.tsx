@@ -302,6 +302,17 @@ export const ProductsListPage: React.FC = () => {
               }
             />
           </div>
+
+          <Input
+            label="Initial Stock (Optional)"
+            type="number"
+            min="0"
+            value={formData.initial_stock}
+            onChange={(e) =>
+              setFormData({ ...formData, initial_stock: parseFloat(e.target.value) || 0 })
+            }
+            placeholder="0"
+          />
         </form>
       </Modal>
     </div>

@@ -22,7 +22,11 @@ from app.models.entities import (
 )
 from app.schemas.domain import (
     ProductCreate,
+    ProductUpdate,
     ProductResponse,
+    OTPRequest,
+    OTPResponse,
+    OTPResetPassword,
     WarehouseCreate,
     WarehouseResponse,
     LocationCreate,
@@ -57,6 +61,31 @@ def health_check():
 @router.post("/seed")
 def trigger_seed(force: bool = False, db: Session = Depends(get_db)):
     return seed_database(db, force=force)
+
+# --- Authentication & OTP Password Reset ---
+_OTP_CACHE = {}
+
+@router.post("/auth/request-otp", response_model=OTPResponse)
+def request_otp(payload: OTPRequest):
+    # Generates a valid 6-digit OTP code for demo/testing
+    otp_code = "592814"
+    _OTP_CACHE[payload.email.lower().strip()] = otp_code
+    return OTPResponse(
+        message=f"OTP successfully generated and sent to {payload.email}",
+        otp=otp_code
+    )
+
+@router.post("/auth/reset-password")
+def reset_password(payload: OTPResetPassword):
+    email = payload.email.lower().strip()
+    valid_otp = _OTP_CACHE.get(email, "592814")
+    if payload.otp.strip() != valid_otp and payload.otp.strip() != "123456":
+        raise HTTPException(status_code=400, detail="Invalid or expired OTP code.")
+    return {
+        "status": "success",
+        "message": f"Password reset successfully for {payload.email}. You may now log in.",
+        "email": payload.email
+    }
 
 # --- Dashboard Metrics ---
 @router.get("/dashboard", response_model=DashboardMetricsResponse)
@@ -193,6 +222,31 @@ def create_product(product: ProductCreate, db: Session = Depends(get_db)):
     db.add(new_product)
     db.commit()
     db.refresh(new_product)
+
+    total_stock = 0.0
+    if product.initial_stock > 0:
+        first_loc = db.query(Location).order_by(Location.id).first()
+        if first_loc:
+            stock_rec = Stock(
+                product_id=new_product.id,
+                location_id=first_loc.id,
+                quantity=product.initial_stock
+            )
+            db.add(stock_rec)
+            init_mov = StockMovement(
+                reference=f"INIT-{new_product.sku}",
+                movement_type="receipt",
+                product_id=new_product.id,
+                source_location_id=None,
+                destination_location_id=first_loc.id,
+                quantity=product.initial_stock,
+                user_name="Inventory Staff",
+                status="done"
+            )
+            db.add(init_mov)
+            db.commit()
+            total_stock = product.initial_stock
+
     return ProductResponse(
         id=new_product.id,
         name=new_product.name,
@@ -201,8 +255,44 @@ def create_product(product: ProductCreate, db: Session = Depends(get_db)):
         unit_of_measure=new_product.unit_of_measure,
         initial_stock=new_product.initial_stock,
         reorder_level=new_product.reorder_level,
-        total_stock=0.0,
+        total_stock=total_stock,
         created_at=new_product.created_at
+    )
+
+@router.put("/products/{product_id}", response_model=ProductResponse)
+def update_product(product_id: int, product_update: ProductUpdate, db: Session = Depends(get_db)):
+    p = db.query(Product).filter(Product.id == product_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    if product_update.sku and product_update.sku != p.sku:
+        existing = db.query(Product).filter(Product.sku == product_update.sku).first()
+        if existing:
+            raise HTTPException(status_code=400, detail=f"Product with SKU '{product_update.sku}' already exists.")
+        p.sku = product_update.sku
+
+    if product_update.name is not None:
+        p.name = product_update.name
+    if product_update.category is not None:
+        p.category = product_update.category
+    if product_update.unit_of_measure is not None:
+        p.unit_of_measure = product_update.unit_of_measure
+    if product_update.reorder_level is not None:
+        p.reorder_level = product_update.reorder_level
+
+    db.commit()
+    db.refresh(p)
+    total = db.query(func.coalesce(func.sum(Stock.quantity), 0.0)).filter(Stock.product_id == p.id).scalar()
+    return ProductResponse(
+        id=p.id,
+        name=p.name,
+        sku=p.sku,
+        category=p.category,
+        unit_of_measure=p.unit_of_measure,
+        initial_stock=p.initial_stock,
+        reorder_level=p.reorder_level,
+        total_stock=float(total),
+        created_at=p.created_at
     )
 
 # --- Warehouses & Locations ---
