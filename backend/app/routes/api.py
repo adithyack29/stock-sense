@@ -32,6 +32,7 @@ from app.schemas.domain import (
     ReceiptResponse,
     ReceiptStatusUpdate,
     DeliveryCreate,
+    DeliveryStatusUpdate,
     DeliveryResponse,
     TransferCreate,
     TransferResponse,
@@ -474,11 +475,23 @@ def validate_receipt(receipt_id: int, db: Session = Depends(get_db)):
 
 # --- Deliveries ---
 @router.get("/deliveries", response_model=List[DeliveryResponse])
-def get_deliveries(db: Session = Depends(get_db)):
-    deliveries = db.query(Delivery).order_by(Delivery.date.desc()).all()
+def get_deliveries(
+    search: Optional[str] = Query(None, description="Search by reference or customer name"),
+    status: Optional[str] = Query(None, description="Filter by status (draft, waiting, ready, done, canceled)"),
+    db: Session = Depends(get_db)
+):
+    query = db.query(Delivery)
+    if status and status.strip():
+        query = query.filter(Delivery.status == status.lower().strip())
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        query = query.filter((Delivery.reference.ilike(term)) | (Delivery.customer.ilike(term)))
+
+    deliveries = query.order_by(Delivery.date.desc()).all()
     res = []
     for d in deliveries:
         loc = db.query(Location).get(d.source_location_id)
+        wh = db.query(Warehouse).get(loc.warehouse_id) if loc else None
         items = []
         for itm in d.items:
             prod = db.query(Product).get(itm.product_id)
@@ -499,8 +512,11 @@ def get_deliveries(db: Session = Depends(get_db)):
             notes=d.notes,
             source_location_id=d.source_location_id,
             source_location_name=loc.name if loc else None,
+            warehouse_id=wh.id if wh else None,
+            warehouse_name=wh.name if wh else None,
             items=items,
-            created_at=d.created_at
+            created_at=d.created_at,
+            updated_at=d.updated_at
         ))
     return res
 
@@ -510,6 +526,7 @@ def get_delivery(delivery_id: int, db: Session = Depends(get_db)):
     if not d:
         raise HTTPException(status_code=404, detail="Delivery order not found")
     loc = db.query(Location).get(d.source_location_id)
+    wh = db.query(Warehouse).get(loc.warehouse_id) if loc else None
     items = []
     for itm in d.items:
         prod = db.query(Product).get(itm.product_id)
@@ -530,42 +547,105 @@ def get_delivery(delivery_id: int, db: Session = Depends(get_db)):
         notes=d.notes,
         source_location_id=d.source_location_id,
         source_location_name=loc.name if loc else None,
+        warehouse_id=wh.id if wh else None,
+        warehouse_name=wh.name if wh else None,
         items=items,
-        created_at=d.created_at
+        created_at=d.created_at,
+        updated_at=d.updated_at
     )
 
 @router.post("/deliveries", response_model=DeliveryResponse)
 def create_delivery(delivery_in: DeliveryCreate, db: Session = Depends(get_db)):
+    # 1. Validate customer
+    customer_clean = delivery_in.customer.strip()
+    if not customer_clean:
+        raise HTTPException(status_code=400, detail="Customer name is required and cannot be blank.")
+
+    # 2. Validate source location exists and is active
+    loc = db.query(Location).filter(
+        Location.id == delivery_in.source_location_id,
+        Location.is_active == True
+    ).first()
+    if not loc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Source location ID {delivery_in.source_location_id} not found or inactive."
+        )
+
+    # 3. Validate items
+    if not delivery_in.items or len(delivery_in.items) == 0:
+        raise HTTPException(status_code=400, detail="At least one delivery line item is required.")
+
+    # 4. Normalize and merge duplicate products
+    item_map = {}
+    for item in delivery_in.items:
+        if item.quantity <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Quantity for product #{item.product_id} must be strictly greater than zero."
+            )
+        prod = db.query(Product).filter(Product.id == item.product_id).first()
+        if not prod:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Product with ID {item.product_id} does not exist in catalog."
+            )
+        item_map[item.product_id] = item_map.get(item.product_id, 0.0) + item.quantity
+
+    # 5. Validate initial status
+    initial_status = (delivery_in.status or "draft").lower().strip()
+    if initial_status not in ["draft", "waiting", "ready"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"New delivery status can only be 'draft', 'waiting', or 'ready'. Received: '{initial_status}'"
+        )
+
+    # 6. Generate sequential reference OUT-YYYY-XXXX
     count = db.query(Delivery).count() + 1
-    ref = f"DEL-{datetime.utcnow().strftime('%Y')}-{count:04d}"
+    ref = f"OUT-{datetime.utcnow().strftime('%Y')}-{count:04d}"
 
     delivery = Delivery(
         reference=ref,
-        customer=delivery_in.customer,
+        customer=customer_clean,
         date=delivery_in.date or datetime.utcnow(),
-        status="draft",
+        status=initial_status,
         source_location_id=delivery_in.source_location_id,
-        notes=delivery_in.notes
+        notes=delivery_in.notes.strip() if delivery_in.notes else None
     )
     db.add(delivery)
     db.flush()
 
-    for item in delivery_in.items:
+    for pid, qty in item_map.items():
         db.add(DeliveryItem(
             delivery_id=delivery.id,
-            product_id=item.product_id,
-            quantity=item.quantity
+            product_id=pid,
+            quantity=qty
         ))
+
     db.commit()
     db.refresh(delivery)
     return get_delivery(delivery.id, db)
 
-@router.post("/deliveries/{delivery_id}/validate")
+@router.patch("/deliveries/{delivery_id}/status", response_model=DeliveryResponse)
+@router.post("/deliveries/{delivery_id}/status", response_model=DeliveryResponse)
+def change_delivery_status(
+    delivery_id: int,
+    status_update: DeliveryStatusUpdate,
+    db: Session = Depends(get_db)
+):
+    d = db.query(Delivery).filter(Delivery.id == delivery_id).first()
+    if not d:
+        raise HTTPException(status_code=404, detail="Delivery order not found")
+    InventoryService.update_delivery_status(db, d, status_update.status)
+    return get_delivery(d.id, db)
+
+@router.post("/deliveries/{delivery_id}/validate", response_model=DeliveryResponse)
 def validate_delivery(delivery_id: int, db: Session = Depends(get_db)):
     d = db.query(Delivery).filter(Delivery.id == delivery_id).first()
     if not d:
-        raise HTTPException(status_code=404, detail="Delivery not found")
-    return InventoryService.complete_delivery(db, d)
+        raise HTTPException(status_code=404, detail="Delivery order not found")
+    InventoryService.complete_delivery(db, d)
+    return get_delivery(d.id, db)
 
 # --- Transfers ---
 @router.get("/transfers", response_model=List[TransferResponse])

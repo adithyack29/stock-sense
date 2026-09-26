@@ -127,11 +127,15 @@ class ReceiptResponse(BaseModel):
 
 # Deliveries
 class DeliveryCreate(BaseModel):
-    customer: str = Field(..., min_length=1)
+    customer: str = Field(..., min_length=1, max_length=150)
     source_location_id: int
     notes: Optional[str] = None
     date: Optional[datetime] = None
-    items: List[DocumentItem] = []
+    status: Optional[str] = Field(default="draft")
+    items: List[DocumentItem] = Field(..., min_length=1)
+
+class DeliveryStatusUpdate(BaseModel):
+    status: str = Field(..., min_length=1)
 
 class DeliveryResponse(BaseModel):
     id: int
@@ -142,8 +146,11 @@ class DeliveryResponse(BaseModel):
     notes: Optional[str] = None
     source_location_id: int
     source_location_name: Optional[str] = None
+    warehouse_id: Optional[int] = None
+    warehouse_name: Optional[str] = None
     items: List[DocumentItemResponse] = []
     created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True

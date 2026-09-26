@@ -57,6 +57,8 @@ export interface StockItem {
   updated_at: string;
 }
 
+export type Stock = StockItem;
+
 export interface ReceiptItem {
   id?: number;
   receipt_id?: number;
@@ -102,8 +104,11 @@ export interface Delivery {
   notes?: string;
   source_location_id: number;
   source_location_name?: string;
+  warehouse_id?: number;
+  warehouse_name?: string;
   items?: DeliveryItem[];
   created_at?: string;
+  updated_at?: string;
 }
 
 export interface TransferItem {

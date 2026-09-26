@@ -73,12 +73,23 @@ export const api = {
     }),
 
   // Deliveries
-  getDeliveries: () => request<Delivery[]>('/deliveries'),
+  getDeliveries: (params?: { search?: string; status?: string }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.search) searchParams.append('search', params.search);
+    if (params?.status) searchParams.append('status', params.status);
+    const query = searchParams.toString();
+    return request<Delivery[]>(`/deliveries${query ? `?${query}` : ''}`);
+  },
   getDelivery: (id: number) => request<Delivery>(`/deliveries/${id}`),
   createDelivery: (data: any) =>
     request<Delivery>('/deliveries', {
       method: 'POST',
       body: JSON.stringify(data),
+    }),
+  updateDeliveryStatus: (id: number, status: string) =>
+    request<Delivery>(`/deliveries/${id}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
     }),
   validateDelivery: (id: number) =>
     request<Delivery>(`/deliveries/${id}/validate`, {

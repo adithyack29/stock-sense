@@ -112,6 +112,7 @@ class Delivery(Base):
     source_location_id = Column(Integer, ForeignKey("locations.id"), nullable=False)
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
     source_location = relationship("Location")

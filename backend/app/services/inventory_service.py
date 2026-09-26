@@ -185,49 +185,155 @@ class InventoryService:
             )
 
     @staticmethod
-    def complete_delivery(db: Session, delivery: Delivery) -> Delivery:
+    def update_delivery_status(db: Session, delivery: Delivery, new_status: str) -> Delivery:
+        new_status = new_status.lower().strip()
+        if delivery.status == new_status:
+            return delivery
+
+        # Check terminal statuses
         if delivery.status == "done":
-            raise HTTPException(status_code=400, detail="Delivery order has already been processed.")
+            raise HTTPException(
+                status_code=400,
+                detail="Delivery has already been completed and cannot change status."
+            )
         if delivery.status == "canceled":
-            raise HTTPException(status_code=400, detail="Cannot process a canceled delivery.")
-
-        # Validate stock availability
-        for item in delivery.items:
-            stock = db.query(Stock).filter(
-                Stock.product_id == item.product_id,
-                Stock.location_id == delivery.source_location_id
-            ).first()
-
-            available = stock.quantity if stock else 0.0
-            if available < item.quantity:
-                product = db.query(Product).get(item.product_id)
-                prod_name = product.name if product else f"Product #{item.product_id}"
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Insufficient stock for '{prod_name}'. Available: {available}, Required: {item.quantity}"
-                )
-
-        # Decrease stock & log movement
-        for item in delivery.items:
-            stock = InventoryService.get_or_create_stock(db, item.product_id, delivery.source_location_id)
-            stock.quantity -= item.quantity
-            stock.updated_at = datetime.utcnow()
-
-            InventoryService.log_movement(
-                db=db,
-                reference=delivery.reference,
-                movement_type="delivery",
-                product_id=item.product_id,
-                quantity=item.quantity,
-                source_location_id=delivery.source_location_id,
-                destination_location_id=None,
-                status="done"
+            raise HTTPException(
+                status_code=400,
+                detail="Canceled delivery is terminal and cannot change status."
             )
 
-        delivery.status = "done"
+        if new_status == "done":
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot directly set status to 'done'. Please use the validate endpoint to verify and ship goods."
+            )
+
+        valid_transitions = {
+            "draft": ["waiting", "ready", "canceled"],
+            "waiting": ["ready", "canceled"],
+            "ready": ["waiting", "canceled"],
+        }
+
+        allowed = valid_transitions.get(delivery.status, [])
+        if new_status not in allowed:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid status transition from '{delivery.status}' to '{new_status}'. Allowed transitions: {', '.join(allowed) or 'none'}."
+            )
+
+        delivery.status = new_status
+        delivery.updated_at = datetime.utcnow()
         db.commit()
         db.refresh(delivery)
         return delivery
+
+    @staticmethod
+    def complete_delivery(db: Session, delivery: Delivery, operator_name: str = "Inventory Staff") -> Delivery:
+        # 1. State machine & idempotency checks
+        if delivery.status == "done":
+            raise HTTPException(
+                status_code=400,
+                detail="Delivery has already been completed and stock has been deducted."
+            )
+        if delivery.status == "canceled":
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot process a canceled delivery."
+            )
+        if delivery.status not in ["ready", "waiting"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Delivery must be in 'ready' status before validation (currently '{delivery.status}'). Please mark as ready first."
+            )
+
+        if not delivery.items or len(delivery.items) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Delivery contains no line items to ship."
+            )
+
+        # 2. Source location verification
+        source_loc = db.query(Location).filter(
+            Location.id == delivery.source_location_id,
+            Location.is_active == True
+        ).first()
+        if not source_loc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Source location ID {delivery.source_location_id} not found or inactive."
+            )
+
+        # 3. Atomic execution
+        try:
+            # Step A: Validate all items exist & have positive quantity; accumulate demands by product
+            product_demands = {}
+            for item in delivery.items:
+                if item.quantity <= 0:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Item quantity must be greater than zero. Received: {item.quantity}"
+                    )
+                prod = db.query(Product).filter(Product.id == item.product_id).first()
+                if not prod:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Product with ID {item.product_id} does not exist."
+                    )
+                product_demands[item.product_id] = product_demands.get(item.product_id, 0.0) + item.quantity
+
+            # Step B: Check stock availability for every product before any deduction
+            for prod_id, total_needed in product_demands.items():
+                stock = db.query(Stock).filter(
+                    Stock.product_id == prod_id,
+                    Stock.location_id == delivery.source_location_id
+                ).first()
+                available = stock.quantity if stock else 0.0
+                if available < total_needed:
+                    prod = db.query(Product).get(prod_id)
+                    prod_name = prod.name if prod else f"Product #{prod_id}"
+                    uom = f" {prod.unit_of_measure}" if prod and prod.unit_of_measure else ""
+                    avail_str = f"{int(available) if available.is_integer() else available}{uom}"
+                    req_str = f"{int(total_needed) if total_needed.is_integer() else total_needed}{uom}"
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Insufficient stock for {prod_name}. Available: {avail_str}, requested: {req_str}."
+                    )
+
+            # Step C: All checks passed! Deduct stock and log movement for each line item
+            for item in delivery.items:
+                stock = db.query(Stock).filter(
+                    Stock.product_id == item.product_id,
+                    Stock.location_id == delivery.source_location_id
+                ).first()
+                stock.quantity -= item.quantity
+                stock.updated_at = datetime.utcnow()
+
+                InventoryService.log_movement(
+                    db=db,
+                    reference=delivery.reference,
+                    movement_type="delivery",
+                    product_id=item.product_id,
+                    quantity=item.quantity,
+                    source_location_id=delivery.source_location_id,
+                    destination_location_id=None,
+                    user_name=operator_name,
+                    status="done"
+                )
+
+            delivery.status = "done"
+            delivery.updated_at = datetime.utcnow()
+            db.commit()
+            db.refresh(delivery)
+            return delivery
+        except HTTPException:
+            db.rollback()
+            raise
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(
+                status_code=500,
+                detail=f"Internal database error while fulfilling delivery: {str(e)}"
+            )
 
     @staticmethod
     def complete_transfer(db: Session, transfer: InternalTransfer) -> InternalTransfer:
