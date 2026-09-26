@@ -38,6 +38,7 @@ from app.schemas.domain import (
     TransferStatusUpdate,
     TransferResponse,
     AdjustmentCreate,
+    AdjustmentStatusUpdate,
     AdjustmentResponse,
     MovementResponse,
     DashboardMetricsResponse,
@@ -844,56 +845,176 @@ def validate_transfer(transfer_id: int, db: Session = Depends(get_db)):
     return get_transfer(t.id, db)
 
 # --- Adjustments ---
+def _build_adjustment_response(a: StockAdjustment, db: Session) -> AdjustmentResponse:
+    prod = db.query(Product).get(a.product_id)
+    loc = db.query(Location).get(a.location_id)
+    wh = db.query(Warehouse).get(loc.warehouse_id) if loc and loc.warehouse_id else None
+    return AdjustmentResponse(
+        id=a.id,
+        reference=a.reference,
+        product_id=a.product_id,
+        product_name=prod.name if prod else None,
+        product_sku=prod.sku if prod else None,
+        unit_of_measure=prod.unit_of_measure if prod else "pcs",
+        location_id=a.location_id,
+        location_name=loc.name if loc else None,
+        warehouse_id=loc.warehouse_id if loc else None,
+        warehouse_name=wh.name if wh else None,
+        previous_quantity=a.previous_quantity,
+        counted_quantity=a.counted_quantity,
+        difference=a.difference,
+        reason=a.reason,
+        notes=a.notes,
+        user_name=a.user_name,
+        date=a.date,
+        status=a.status,
+        created_at=a.created_at,
+        updated_at=a.updated_at
+    )
+
 @router.get("/adjustments", response_model=List[AdjustmentResponse])
-def get_adjustments(db: Session = Depends(get_db)):
-    adjs = db.query(StockAdjustment).order_by(StockAdjustment.date.desc()).all()
-    res = []
-    for a in adjs:
-        prod = db.query(Product).get(a.product_id)
-        loc = db.query(Location).get(a.location_id)
-        res.append(AdjustmentResponse(
-            id=a.id,
-            reference=a.reference,
-            product_id=a.product_id,
-            product_name=prod.name if prod else None,
-            location_id=a.location_id,
-            location_name=loc.name if loc else None,
-            previous_quantity=a.previous_quantity,
-            counted_quantity=a.counted_quantity,
-            difference=a.difference,
-            reason=a.reason,
-            date=a.date,
-            status=a.status,
-            created_at=a.created_at
-        ))
-    return res
+def get_adjustments(
+    status: Optional[str] = None,
+    product_id: Optional[int] = None,
+    location_id: Optional[int] = None,
+    search: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    query = db.query(StockAdjustment)
+    if status and status.strip():
+        query = query.filter(StockAdjustment.status == status.strip().lower())
+    if product_id:
+        query = query.filter(StockAdjustment.product_id == product_id)
+    if location_id:
+        query = query.filter(StockAdjustment.location_id == location_id)
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        query = query.join(Product, StockAdjustment.product_id == Product.id, isouter=True).filter(
+            (StockAdjustment.reference.ilike(term)) |
+            (StockAdjustment.reason.ilike(term)) |
+            (StockAdjustment.notes.ilike(term)) |
+            (Product.name.ilike(term)) |
+            (Product.sku.ilike(term))
+        )
+    adjs = query.order_by(StockAdjustment.date.desc(), StockAdjustment.id.desc()).all()
+    return [_build_adjustment_response(a, db) for a in adjs]
+
+@router.get("/adjustments/{adj_id}", response_model=AdjustmentResponse)
+def get_adjustment(adj_id: int, db: Session = Depends(get_db)):
+    adj = db.query(StockAdjustment).filter(StockAdjustment.id == adj_id).first()
+    if not adj:
+        raise HTTPException(status_code=404, detail="Stock adjustment not found")
+    return _build_adjustment_response(adj, db)
 
 @router.post("/adjustments", response_model=AdjustmentResponse)
 def create_adjustment(adj_in: AdjustmentCreate, db: Session = Depends(get_db)):
-    adj = InventoryService.execute_adjustment(
-        db=db,
-        product_id=adj_in.product_id,
-        location_id=adj_in.location_id,
-        counted_qty=adj_in.counted_quantity,
-        reason=adj_in.reason
-    )
-    prod = db.query(Product).get(adj.product_id)
-    loc = db.query(Location).get(adj.location_id)
-    return AdjustmentResponse(
-        id=adj.id,
-        reference=adj.reference,
-        product_id=adj.product_id,
-        product_name=prod.name if prod else None,
-        location_id=adj.location_id,
-        location_name=loc.name if loc else None,
-        previous_quantity=adj.previous_quantity,
-        counted_quantity=adj.counted_quantity,
-        difference=adj.difference,
-        reason=adj.reason,
-        date=adj.date,
-        status=adj.status,
-        created_at=adj.created_at
-    )
+    if adj_in.counted_quantity < 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Counted physical quantity must be greater than or equal to zero. Received: {adj_in.counted_quantity}"
+        )
+    prod = db.query(Product).filter(Product.id == adj_in.product_id).first()
+    if not prod:
+        raise HTTPException(status_code=400, detail=f"Product with ID {adj_in.product_id} does not exist.")
+    loc = db.query(Location).filter(Location.id == adj_in.location_id, Location.is_active == True).first()
+    if not loc:
+        raise HTTPException(status_code=400, detail=f"Location ID {adj_in.location_id} not found or inactive.")
+    if not adj_in.reason or not adj_in.reason.strip():
+        raise HTTPException(status_code=400, detail="Adjustment reason is required.")
+
+    initial_status = (adj_in.status or "draft").lower().strip()
+    if initial_status not in ["draft", "done"]:
+        raise HTTPException(status_code=400, detail=f"New adjustment status can only be 'draft' or 'done'. Received: '{initial_status}'")
+
+    current_year = datetime.utcnow().strftime('%Y')
+    count = db.query(StockAdjustment).count() + 1
+    ref = f"ADJ-{current_year}-{count:04d}"
+    while db.query(StockAdjustment).filter(StockAdjustment.reference == ref).first():
+        count += 1
+        ref = f"ADJ-{current_year}-{count:04d}"
+
+    stock = InventoryService.get_or_create_stock(db, adj_in.product_id, adj_in.location_id)
+    prev_qty = stock.quantity
+    diff = adj_in.counted_quantity - prev_qty
+
+    if initial_status == "done":
+        # Atomically apply stock update & ledger entry
+        try:
+            adj = StockAdjustment(
+                reference=ref,
+                product_id=adj_in.product_id,
+                location_id=adj_in.location_id,
+                previous_quantity=prev_qty,
+                counted_quantity=adj_in.counted_quantity,
+                difference=diff,
+                reason=adj_in.reason.strip(),
+                notes=adj_in.notes.strip() if adj_in.notes else None,
+                user_name="Inventory Staff",
+                date=adj_in.date or datetime.utcnow(),
+                status="done"
+            )
+            db.add(adj)
+            stock.quantity = adj_in.counted_quantity
+            stock.updated_at = datetime.utcnow()
+
+            if diff != 0:
+                InventoryService.log_movement(
+                    db=db,
+                    reference=ref,
+                    movement_type="adjustment",
+                    product_id=adj_in.product_id,
+                    quantity=abs(diff),
+                    source_location_id=adj_in.location_id if diff < 0 else None,
+                    destination_location_id=adj_in.location_id if diff > 0 else None,
+                    user_name="Inventory Staff",
+                    status="done"
+                )
+            db.commit()
+            db.refresh(adj)
+            return _build_adjustment_response(adj, db)
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"Internal database error while creating adjustment: {str(e)}")
+    else:
+        # Save as draft (do NOT touch stock or ledger)
+        adj = StockAdjustment(
+            reference=ref,
+            product_id=adj_in.product_id,
+            location_id=adj_in.location_id,
+            previous_quantity=prev_qty,
+            counted_quantity=adj_in.counted_quantity,
+            difference=diff,
+            reason=adj_in.reason.strip(),
+            notes=adj_in.notes.strip() if adj_in.notes else None,
+            user_name="Inventory Staff",
+            date=adj_in.date or datetime.utcnow(),
+            status="draft"
+        )
+        db.add(adj)
+        db.commit()
+        db.refresh(adj)
+        return _build_adjustment_response(adj, db)
+
+@router.patch("/adjustments/{adj_id}/status", response_model=AdjustmentResponse)
+@router.post("/adjustments/{adj_id}/status", response_model=AdjustmentResponse)
+def change_adjustment_status(
+    adj_id: int,
+    status_update: AdjustmentStatusUpdate,
+    db: Session = Depends(get_db)
+):
+    adj = db.query(StockAdjustment).filter(StockAdjustment.id == adj_id).first()
+    if not adj:
+        raise HTTPException(status_code=404, detail="Stock adjustment not found")
+    InventoryService.update_adjustment_status(db, adj, status_update.status)
+    return _build_adjustment_response(adj, db)
+
+@router.post("/adjustments/{adj_id}/validate", response_model=AdjustmentResponse)
+def validate_adjustment(adj_id: int, db: Session = Depends(get_db)):
+    adj = db.query(StockAdjustment).filter(StockAdjustment.id == adj_id).first()
+    if not adj:
+        raise HTTPException(status_code=404, detail="Stock adjustment not found")
+    InventoryService.complete_adjustment(db, adj)
+    return _build_adjustment_response(adj, db)
 
 # --- Movements / Stock Ledger ---
 @router.get("/movements", response_model=List[MovementResponse])

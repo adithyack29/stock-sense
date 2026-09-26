@@ -194,21 +194,34 @@ class AdjustmentCreate(BaseModel):
     location_id: int
     counted_quantity: float = Field(..., ge=0)
     reason: str = Field(..., min_length=1)
+    notes: Optional[str] = None
+    date: Optional[datetime] = None
+    status: Optional[str] = Field(default="done") # "draft" or "done"
+
+class AdjustmentStatusUpdate(BaseModel):
+    status: str = Field(..., min_length=1)
 
 class AdjustmentResponse(BaseModel):
     id: int
     reference: str
     product_id: int
     product_name: Optional[str] = None
+    product_sku: Optional[str] = None
+    unit_of_measure: Optional[str] = None
     location_id: int
     location_name: Optional[str] = None
+    warehouse_id: Optional[int] = None
+    warehouse_name: Optional[str] = None
     previous_quantity: float
     counted_quantity: float
     difference: float
     reason: str
+    notes: Optional[str] = None
+    user_name: Optional[str] = None
     date: datetime
     status: str
     created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True

@@ -145,15 +145,22 @@ export interface StockAdjustment {
   reference: string;
   product_id: number;
   product_name?: string;
+  product_sku?: string;
+  unit_of_measure?: string;
   location_id: number;
   location_name?: string;
+  warehouse_id?: number;
+  warehouse_name?: string;
   previous_quantity: number;
   counted_quantity: number;
   difference: number;
   reason: string;
+  notes?: string;
+  user_name?: string;
   date: string;
   status: StatusType;
   created_at?: string;
+  updated_at?: string;
 }
 
 export interface StockMovement {

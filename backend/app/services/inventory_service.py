@@ -506,44 +506,197 @@ class InventoryService:
             )
 
     @staticmethod
-    def execute_adjustment(db: Session, product_id: int, location_id: int, counted_qty: float, reason: str) -> StockAdjustment:
-        stock = InventoryService.get_or_create_stock(db, product_id, location_id)
-        prev_qty = stock.quantity
-        diff = counted_qty - prev_qty
+    def update_adjustment_status(db: Session, adj: StockAdjustment, new_status: str) -> StockAdjustment:
+        new_status = new_status.lower().strip()
+        if adj.status == "done":
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot change status of a completed adjustment."
+            )
+        if adj.status == "canceled":
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot change status of a canceled adjustment."
+            )
+        if new_status == "done":
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot directly mark adjustment as done via status endpoint. Please use the validate endpoint to atomically reconcile stock."
+            )
+        valid_transitions = {
+            "draft": ["canceled"],
+        }
+        allowed = valid_transitions.get(adj.status, [])
+        if new_status not in allowed:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid status transition from '{adj.status}' to '{new_status}'. Allowed transitions: {', '.join(allowed) or 'none'}."
+            )
 
-        # Generate unique reference
-        count = db.query(StockAdjustment).count() + 1
-        ref = f"ADJ-{datetime.utcnow().strftime('%Y%m')}-{count:04d}"
-
-        adj = StockAdjustment(
-            reference=ref,
-            product_id=product_id,
-            location_id=location_id,
-            previous_quantity=prev_qty,
-            counted_quantity=counted_qty,
-            difference=diff,
-            reason=reason,
-            date=datetime.utcnow(),
-            status="done"
-        )
-        db.add(adj)
-
-        # Update stock
-        stock.quantity = counted_qty
-        stock.updated_at = datetime.utcnow()
-
-        # Log movement
-        InventoryService.log_movement(
-            db=db,
-            reference=ref,
-            movement_type="adjustment",
-            product_id=product_id,
-            quantity=abs(diff),
-            source_location_id=location_id if diff < 0 else None,
-            destination_location_id=location_id if diff > 0 else None,
-            status="done"
-        )
-
+        adj.status = new_status
+        adj.updated_at = datetime.utcnow()
         db.commit()
         db.refresh(adj)
         return adj
+
+    @staticmethod
+    def complete_adjustment(db: Session, adj: StockAdjustment, operator_name: str = "Inventory Staff") -> StockAdjustment:
+        # 1. State machine & idempotency checks
+        if adj.status == "done":
+            raise HTTPException(
+                status_code=400,
+                detail="Adjustment has already been completed and stock has been reconciled."
+            )
+        if adj.status == "canceled":
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot validate a canceled adjustment."
+            )
+        if adj.status != "draft":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Adjustment must be in 'draft' status before validation (currently '{adj.status}')."
+            )
+
+        # 2. Input and entity validation
+        if adj.counted_quantity is None or adj.counted_quantity < 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Counted physical quantity must be greater than or equal to zero. Received: {adj.counted_quantity}"
+            )
+
+        prod = db.query(Product).filter(Product.id == adj.product_id).first()
+        if not prod:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Product with ID {adj.product_id} does not exist."
+            )
+
+        loc = db.query(Location).filter(Location.id == adj.location_id, Location.is_active == True).first()
+        if not loc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Location ID {adj.location_id} not found or inactive."
+            )
+
+        # 3. Concurrent stock safety & live calculation
+        try:
+            stock = InventoryService.get_or_create_stock(db, adj.product_id, adj.location_id)
+            prev_qty = stock.quantity
+            counted_qty = adj.counted_quantity
+            diff = counted_qty - prev_qty
+
+            adj.previous_quantity = prev_qty
+            adj.difference = diff
+            stock.quantity = counted_qty
+            stock.updated_at = datetime.utcnow()
+
+            # Ledger entry (Option B: only log movement when diff != 0)
+            if diff != 0:
+                InventoryService.log_movement(
+                    db=db,
+                    reference=adj.reference,
+                    movement_type="adjustment",
+                    product_id=adj.product_id,
+                    quantity=abs(diff),
+                    source_location_id=adj.location_id if diff < 0 else None,
+                    destination_location_id=adj.location_id if diff > 0 else None,
+                    user_name=operator_name or adj.user_name or "Inventory Staff",
+                    status="done"
+                )
+
+            adj.status = "done"
+            adj.updated_at = datetime.utcnow()
+            db.commit()
+            db.refresh(adj)
+            return adj
+        except HTTPException:
+            db.rollback()
+            raise
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(
+                status_code=500,
+                detail=f"Internal database error while validating adjustment: {str(e)}"
+            )
+
+    @staticmethod
+    def execute_adjustment(
+        db: Session,
+        product_id: int,
+        location_id: int,
+        counted_qty: float,
+        reason: str,
+        notes: Optional[str] = None,
+        operator_name: str = "Inventory Staff",
+        date: Optional[datetime] = None
+    ) -> StockAdjustment:
+        if counted_qty < 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Counted physical quantity must be greater than or equal to zero. Received: {counted_qty}"
+            )
+        prod = db.query(Product).filter(Product.id == product_id).first()
+        if not prod:
+            raise HTTPException(status_code=400, detail=f"Product with ID {product_id} does not exist.")
+        loc = db.query(Location).filter(Location.id == location_id, Location.is_active == True).first()
+        if not loc:
+            raise HTTPException(status_code=400, detail=f"Location ID {location_id} not found or inactive.")
+
+        try:
+            stock = InventoryService.get_or_create_stock(db, product_id, location_id)
+            prev_qty = stock.quantity
+            diff = counted_qty - prev_qty
+
+            current_year = datetime.utcnow().strftime('%Y')
+            count = db.query(StockAdjustment).count() + 1
+            ref = f"ADJ-{current_year}-{count:04d}"
+            while db.query(StockAdjustment).filter(StockAdjustment.reference == ref).first():
+                count += 1
+                ref = f"ADJ-{current_year}-{count:04d}"
+
+            adj = StockAdjustment(
+                reference=ref,
+                product_id=product_id,
+                location_id=location_id,
+                previous_quantity=prev_qty,
+                counted_quantity=counted_qty,
+                difference=diff,
+                reason=reason,
+                notes=notes,
+                date=date or datetime.utcnow(),
+                status="done",
+                user_name=operator_name
+            )
+            db.add(adj)
+
+            # Update stock
+            stock.quantity = counted_qty
+            stock.updated_at = datetime.utcnow()
+
+            # Ledger entry (Option B: only log if diff != 0)
+            if diff != 0:
+                InventoryService.log_movement(
+                    db=db,
+                    reference=ref,
+                    movement_type="adjustment",
+                    product_id=product_id,
+                    quantity=abs(diff),
+                    source_location_id=location_id if diff < 0 else None,
+                    destination_location_id=location_id if diff > 0 else None,
+                    user_name=operator_name,
+                    status="done"
+                )
+
+            db.commit()
+            db.refresh(adj)
+            return adj
+        except HTTPException:
+            db.rollback()
+            raise
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(
+                status_code=500,
+                detail=f"Internal database error while executing adjustment: {str(e)}"
+            )

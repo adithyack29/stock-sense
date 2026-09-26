@@ -172,8 +172,11 @@ class StockAdjustment(Base):
     difference = Column(Float, nullable=False, default=0.0)
     reason = Column(String(255), nullable=False)
     date = Column(DateTime, default=datetime.utcnow)
-    status = Column(String(30), default="done", nullable=False)
+    status = Column(String(30), default="done", nullable=False) # draft, done, canceled
+    notes = Column(Text, nullable=True)
+    user_name = Column(String(100), default="Inventory Staff")
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
     product = relationship("Product")

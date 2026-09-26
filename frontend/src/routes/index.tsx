@@ -26,6 +26,7 @@ import { TransferDetailPage } from '../pages/transfers/TransferDetailPage';
 import { NewTransferPage } from '../pages/transfers/NewTransferPage';
 
 import { AdjustmentsListPage } from '../pages/adjustments/AdjustmentsListPage';
+import { AdjustmentDetailPage } from '../pages/adjustments/AdjustmentDetailPage';
 import { NewAdjustmentPage } from '../pages/adjustments/NewAdjustmentPage';
 
 // Ledger & Infrastructure
@@ -72,6 +73,7 @@ export const AppRoutes: React.FC = () => {
         {/* Stock Adjustments */}
         <Route path="/adjustments" element={<AdjustmentsListPage />} />
         <Route path="/adjustments/new" element={<NewAdjustmentPage />} />
+        <Route path="/adjustments/:id" element={<AdjustmentDetailPage />} />
 
         {/* Move History / Ledger (Section 4: Click 'Move History' -> list view first) */}
         <Route path="/move-history" element={<MoveHistoryListPage />} />

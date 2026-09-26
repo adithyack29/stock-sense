@@ -121,11 +121,29 @@ export const api = {
     }),
 
   // Adjustments
-  getAdjustments: () => request<StockAdjustment[]>('/adjustments'),
+  getAdjustments: (params?: { status?: string; product_id?: number; location_id?: number; search?: string }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.status) searchParams.append('status', params.status);
+    if (params?.product_id) searchParams.append('product_id', params.product_id.toString());
+    if (params?.location_id) searchParams.append('location_id', params.location_id.toString());
+    if (params?.search) searchParams.append('search', params.search);
+    const query = searchParams.toString();
+    return request<StockAdjustment[]>(`/adjustments${query ? `?${query}` : ''}`);
+  },
+  getAdjustment: (id: number) => request<StockAdjustment>(`/adjustments/${id}`),
   createAdjustment: (data: any) =>
     request<StockAdjustment>('/adjustments', {
       method: 'POST',
       body: JSON.stringify(data),
+    }),
+  updateAdjustmentStatus: (id: number, status: string) =>
+    request<StockAdjustment>(`/adjustments/${id}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
+    }),
+  validateAdjustment: (id: number) =>
+    request<StockAdjustment>(`/adjustments/${id}/validate`, {
+      method: 'POST',
     }),
 
   // Movements / Ledger

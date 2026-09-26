@@ -93,7 +93,9 @@ export const MoveHistoryListPage: React.FC = () => {
           {row.source_location_name ? (
             <span className="font-mono text-slate-600">{row.source_location_name}</span>
           ) : (
-            <span className="text-slate-400 italic">Supplier / Inbound</span>
+            <span className="text-slate-400 italic">
+              {row.movement_type === 'adjustment' ? 'Reconciliation' : 'Supplier / Inbound'}
+            </span>
           )}
           <span className="mx-2 text-slate-400 font-bold">→</span>
           {row.destination_location_name ? (
@@ -101,7 +103,9 @@ export const MoveHistoryListPage: React.FC = () => {
               {row.destination_location_name}
             </span>
           ) : (
-            <span className="text-slate-400 italic">Customer / Outbound</span>
+            <span className="text-slate-400 italic">
+              {row.movement_type === 'adjustment' ? 'Inventory Variance' : 'Customer / Outbound'}
+            </span>
           )}
         </div>
       ),
@@ -110,12 +114,21 @@ export const MoveHistoryListPage: React.FC = () => {
       key: 'quantity',
       header: 'Movement Quantity',
       align: 'right',
-      render: (row) => (
-        <span className="font-mono font-bold text-slate-900 text-xs">
-          {row.movement_type === 'delivery' ? '-' : '+'}
-          {formatQuantity(row.quantity, row.unit_of_measure)}
-        </span>
-      ),
+      render: (row) => {
+        const isNegative =
+          row.movement_type === 'delivery' ||
+          (row.movement_type === 'adjustment' && row.source_location_name && !row.destination_location_name);
+        return (
+          <span
+            className={`font-mono font-bold text-xs ${
+              isNegative ? 'text-rose-600' : 'text-emerald-600'
+            }`}
+          >
+            {isNegative ? '-' : '+'}
+            {formatQuantity(row.quantity, row.unit_of_measure)}
+          </span>
+        );
+      },
     },
     {
       key: 'user_name',
