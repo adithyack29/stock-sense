@@ -12,7 +12,7 @@ export const SettingsPage: React.FC = () => {
   const handleResetData = async () => {
     try {
       setIsSeeding(true);
-      await api.seedDatabase();
+      await api.seedDatabase(true);
       setSeedSuccess(true);
       setTimeout(() => setSeedSuccess(false), 2500);
     } catch (err: any) {

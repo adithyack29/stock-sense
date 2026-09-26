@@ -55,8 +55,8 @@ def health_check():
     return {"status": "ok", "app": "StockSense API", "version": "1.0.0", "timestamp": datetime.utcnow().isoformat()}
 
 @router.post("/seed")
-def trigger_seed(db: Session = Depends(get_db)):
-    return seed_database(db)
+def trigger_seed(force: bool = False, db: Session = Depends(get_db)):
+    return seed_database(db, force=force)
 
 # --- Dashboard Metrics ---
 @router.get("/dashboard", response_model=DashboardMetricsResponse)
@@ -64,10 +64,12 @@ def get_dashboard(db: Session = Depends(get_db)):
     total_products = db.query(Product).count()
     total_warehouses = db.query(Warehouse).count()
     total_locations = db.query(Location).count()
+    total_stock_qty = float(db.query(func.coalesce(func.sum(Stock.quantity), 0.0)).scalar() or 0.0)
 
     pending_receipts = db.query(Receipt).filter(Receipt.status.in_(["draft", "ready"])).count()
     pending_deliveries = db.query(Delivery).filter(Delivery.status.in_(["draft", "waiting", "ready"])).count()
     pending_transfers = db.query(InternalTransfer).filter(InternalTransfer.status.in_(["draft", "waiting", "ready"])).count()
+    pending_adjustments = db.query(StockAdjustment).filter(StockAdjustment.status == "draft").count()
 
     # Find stock items where quantity <= reorder_level
     stocks = (
@@ -130,14 +132,16 @@ def get_dashboard(db: Session = Depends(get_db)):
 
     return DashboardMetricsResponse(
         total_products=total_products,
+        total_stock_quantity=total_stock_qty,
         total_warehouses=total_warehouses,
         total_locations=total_locations,
         low_stock_alerts=len(low_stock_list),
         pending_receipts=pending_receipts,
         pending_deliveries=pending_deliveries,
         pending_transfers=pending_transfers,
+        pending_adjustments=pending_adjustments,
         recent_movements=recent_movements,
-        low_stock_items=low_stock_list[:5],
+        low_stock_items=low_stock_list,
     )
 
 # --- Products ---

@@ -12,13 +12,30 @@ from app.models.entities import (
     DeliveryItem,
     InternalTransfer,
     TransferItem,
+    StockAdjustment,
     StockMovement,
 )
 
-def seed_database(db: Session):
-    # Check if already seeded
-    if db.query(Product).first():
+def seed_database(db: Session, force: bool = False):
+    # Check if already seeded unless forced reset
+    if not force and db.query(Product).first():
         return {"message": "Database already contains data."}
+
+    if force:
+        db.query(StockMovement).delete()
+        db.query(StockAdjustment).delete()
+        db.query(TransferItem).delete()
+        db.query(InternalTransfer).delete()
+        db.query(DeliveryItem).delete()
+        db.query(Delivery).delete()
+        db.query(ReceiptItem).delete()
+        db.query(Receipt).delete()
+        db.query(Stock).delete()
+        db.query(Product).delete()
+        db.query(Location).delete()
+        db.query(Warehouse).delete()
+        db.query(User).delete()
+        db.commit()
 
     # 1. Users
     admin_user = User(
@@ -230,7 +247,37 @@ def seed_database(db: Session):
         user_name=staff_user.name,
         status="done",
     )
-    db.add_all([m1, m2, m3])
+
+    # 10. Sample Stock Adjustment (Completed)
+    adj1 = StockAdjustment(
+        reference="ADJ-2026-0001",
+        product_id=p1.id,
+        location_id=loc_rack_a.id,
+        previous_quantity=353.0,
+        counted_quantity=350.0,
+        difference=-3.0,
+        reason="Stock Count Correction",
+        notes="3 rods bent and culled during warehouse audit",
+        user_name=staff_user.name,
+        date=datetime.utcnow() - timedelta(days=1),
+        status="done",
+    )
+    db.add(adj1)
+    db.flush()
+
+    m4 = StockMovement(
+        reference=adj1.reference,
+        movement_type="adjustment",
+        product_id=p1.id,
+        source_location_id=loc_rack_a.id,
+        destination_location_id=None,
+        quantity=3.0,
+        date=datetime.utcnow() - timedelta(days=1),
+        user_name=staff_user.name,
+        status="done",
+    )
+
+    db.add_all([m1, m2, m3, m4])
 
     db.commit()
     return {"message": "Database seeded successfully with initial inventory data."}

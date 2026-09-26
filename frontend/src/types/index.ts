@@ -183,12 +183,14 @@ export interface StockMovement {
 
 export interface DashboardMetrics {
   total_products: number;
+  total_stock_quantity: number;
   total_warehouses: number;
   total_locations: number;
   low_stock_alerts: number;
   pending_receipts: number;
   pending_deliveries: number;
   pending_transfers: number;
+  pending_adjustments?: number;
   recent_movements: StockMovement[];
   low_stock_items: StockItem[];
 }

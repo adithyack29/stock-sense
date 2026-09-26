@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, Link } from 'react-router-dom';
 import { History, Filter, FilterX } from 'lucide-react';
 import { api } from '../../api';
 import { StockMovement } from '../../types';
@@ -66,9 +66,22 @@ export const MoveHistoryListPage: React.FC = () => {
     {
       key: 'reference',
       header: 'Reference',
-      render: (row) => (
-        <span className="font-mono font-semibold text-slate-800">{row.reference}</span>
-      ),
+      render: (row) => {
+        let targetRoute = `/move-history?search=${encodeURIComponent(row.reference)}`;
+        if (row.movement_type === 'receipt') targetRoute = `/receipts?search=${encodeURIComponent(row.reference)}`;
+        else if (row.movement_type === 'delivery') targetRoute = `/deliveries?search=${encodeURIComponent(row.reference)}`;
+        else if (row.movement_type === 'transfer') targetRoute = `/transfers?search=${encodeURIComponent(row.reference)}`;
+        else if (row.movement_type === 'adjustment') targetRoute = `/adjustments?search=${encodeURIComponent(row.reference)}`;
+        return (
+          <Link
+            to={targetRoute}
+            className="font-mono font-semibold text-xs text-indigo-700 hover:text-indigo-900 transition-colors"
+            title={`View ${row.movement_type} records`}
+          >
+            {row.reference}
+          </Link>
+        );
+      },
     },
     {
       key: 'movement_type',

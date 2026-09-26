@@ -15,7 +15,8 @@ import {
 export const api = {
   // System
   checkHealth: () => request<{ status: string }>('/health'),
-  seedDatabase: () => request<{ message: string }>('/seed', { method: 'POST' }),
+  seedDatabase: (force?: boolean) =>
+    request<{ message: string }>(`/seed${force ? '?force=true' : ''}`, { method: 'POST' }),
 
   // Dashboard
   getDashboardMetrics: () => request<DashboardMetrics>('/dashboard'),

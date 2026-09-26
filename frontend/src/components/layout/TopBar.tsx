@@ -16,7 +16,7 @@ export const TopBar: React.FC<TopBarProps> = ({ onToggleMobileNav }) => {
   const handleSeed = async () => {
     try {
       setIsSeeding(true);
-      await api.seedDatabase();
+      await api.seedDatabase(true);
       setSeedSuccess(true);
       setTimeout(() => {
         setSeedSuccess(false);

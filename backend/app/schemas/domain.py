@@ -250,11 +250,13 @@ class MovementResponse(BaseModel):
 # Dashboard
 class DashboardMetricsResponse(BaseModel):
     total_products: int
+    total_stock_quantity: float = 0.0
     total_warehouses: int
     total_locations: int
     low_stock_alerts: int
     pending_receipts: int
     pending_deliveries: int
     pending_transfers: int
+    pending_adjustments: int = 0
     recent_movements: List[MovementResponse] = []
     low_stock_items: List[StockResponse] = []
